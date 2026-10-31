@@ -11,6 +11,7 @@ BACKEND = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 DEMO = os.getenv("DEMO_APP_URL", "http://127.0.0.1:8080")
 WS = os.getenv("WS_URL", "ws://127.0.0.1:8000/ws/live")
 ATTACK_MODE = os.getenv("ATTACK_MODE", "scripted")
+WAIT_SECONDS = float(os.getenv("WAIT_SECONDS", "45"))
 
 
 async def main() -> None:
@@ -52,7 +53,7 @@ async def main() -> None:
             )
             start.raise_for_status()
 
-            await asyncio.wait_for(finished.wait(), timeout=45)
+            await asyncio.wait_for(finished.wait(), timeout=WAIT_SECONDS)
             await asyncio.sleep(0.4)
 
             print("[3] Alerta y análisis")

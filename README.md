@@ -2,9 +2,9 @@
 
 Sistema demostrable de punta a punta para una sola pyme: app de login deliberadamente
 vulnerable, backend que escanea, detecta ataques por reglas, correlaciona hallazgos y usa
-Claude para explicar, priorizar y proponer un plan de corrección. La alerta se notifica por
-Telegram con un botón para bloquear la IP y se publica en vivo en un panel React con dos
-terminales.
+**Groq Free** (`openai/gpt-oss-120b`) para explicar, priorizar y proponer un plan de
+corrección. La alerta se notifica por Telegram con un botón para bloquear la IP y se publica
+en vivo en un panel React con dos terminales.
 
 Todo el tráfico ofensivo apunta **solo** a la app de demo local. El objetivo está fijado en
 el backend y validado como loopback; nunca se acepta un host desde el cliente, el modelo o
@@ -31,7 +31,7 @@ login del panel, botón “Fue yo”, gráficos y escaneo de redes.
                                                           |-- Reglas de detección
                                                           |-- Escáner (4 chequeos)
                                                           |-- Correlación alerta + findings
-                                                          |-- IA defensora (Claude) --> JSON validado
+                                                          |-- IA defensora (Groq Free) --> JSON validado
                                                           |-- SQLite (events, findings, alerts, blocked_ips)
                                                           |-- Telegram (alerta + botón Bloquear IP)
                                                           |-- WebSocket /ws/live --> [Panel React :5173]
@@ -78,8 +78,11 @@ Copia `.env.example` a `.env`. Variables principales:
 | `DEMO_USER`, `DEMO_PASSWORD` | Credenciales ficticias solo de la demo. No se muestran en el panel ni en logs. |
 | `BRUTE_FORCE_THRESHOLD`, `BRUTE_FORCE_WINDOW_SECONDS` | Regla 1. En demo: 5 fallos en 60 s. |
 | `ALERT_DEDUP_SECONDS` | Ventana de deduplicación por `(source_ip, host)`. Por defecto 300 s. |
-| `ANTHROPIC_API_KEY` | Clave de Claude. Si falta, se usa el texto de respaldo. |
-| `CLAUDE_MODEL` | Modelo de Claude; ajusta al disponible en tu cuenta. |
+| `LLM_PROVIDER` | `groq` (principal) o `anthropic` (opcional). |
+| `GROQ_API_KEY` | Clave gratuita de Groq. Si falta o falla, se usa el texto de respaldo. |
+| `GROQ_MODEL` | Modelo free; por defecto `openai/gpt-oss-120b`. |
+| `GROQ_BASE_URL` | Endpoint OpenAI-compatible de Groq. |
+| `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` | Proveedor opcional de respaldo. |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Si faltan, Telegram queda desactivado sin romper el flujo. |
 | `MAX_ATTACK_STEPS` | Tope duro de pasos del agente agéntico. |
 | `ATTACKER_TIMEOUT_SECONDS` | Timeout total del ataque. |
@@ -90,22 +93,30 @@ loopback para simular una IP externa (203.0.113.7); es un detalle de la demo, no
 configurable. Ejecuta un solo worker de uvicorn: WebSocket, locks y long polling viven en
 memoria del proceso.
 
-## IA: Claude y respaldo
+## IA: Groq Free y respaldo
+
+La IA principal es **Groq Free** con `openai/gpt-oss-120b`, vía API compatible con OpenAI.
+El plan Free documentado permite 30 RPM, 1 000 RPD, 8 000 TPM y 200 000 TPD; los límites
+pueden cambiar, revísalos en Groq Console. El cliente reintenta con `Retry-After` si recibe
+429. Si la clave falta, la API falla, tarda o el JSON no valida, se usa la plantilla
+determinista.
 
 La IA defensora se llama **solo cuando nace una alerta nueva o escala a éxito tras fallos**,
 nunca por cada evento. Recibe un JSON acotado con la alerta y hasta cinco hallazgos
 correlacionados. `user`, `host` y el resto de campos no confiables van delimitados con un
-nonce y el prompt de sistema aclara que son datos, no instrucciones.
+nonce y el prompt de sistema aclara que son datos, no instrucciones. El payload distingue
+explícitamente `failed_attempts` de `successful_login` para evitar ambigüedades.
 
-La respuesta se parsea y valida con Pydantic (`AIResult`). Si la API falla, tarda o el JSON
-no valida, se usa una plantilla con severidad calculada por las reglas. La detección y el
-bloqueo nunca dependen de la IA. Si la regla es `success_after_failures`, la severidad mínima
-se fuerza a `high` antes de publicar la alerta.
+La respuesta se parsea y valida con Pydantic (`AIResult`). La detección y el bloqueo nunca
+dependen de la IA. Si la regla es `success_after_failures`, la severidad mínima se fuerza a
+`high` antes de publicar la alerta.
 
 El agente atacante agéntico usa tool calling con herramientas fijas (`revisar_rutas`,
-`revisar_headers`, `probar_login`, `reportar_hallazgo`). No recibe un objetivo como
-parámetro, no ejecuta código libre, usa una lista fija de credenciales de prueba y tiene
-`MAX_ATTACK_STEPS` más timeout. Sin `ANTHROPIC_API_KEY`, cae al modo scripted con un aviso.
+`revisar_headers`, `probar_login`, `reportar_hallazgo`) en formato OpenAI. No recibe un
+objetivo como parámetro, no ejecuta código libre, usa una lista fija de credenciales de
+prueba y tiene `MAX_ATTACK_STEPS` más timeout. Sin `GROQ_API_KEY` ni `ANTHROPIC_API_KEY`, cae
+al modo scripted con un aviso. El ataque scripted es el modo recomendado para la demo porque
+no consume tokens; el agéntico es opcional y puede encontrar el límite de TPM del plan free.
 
 ## Telegram
 
@@ -113,20 +124,43 @@ parámetro, no ejecuta código libre, usa una lista fija de credenciales de prue
 2. Obtén el chat destino y colócalo en `TELEGRAM_CHAT_ID`.
 3. Inicia el backend: el long polling arranca solo, sin webhook ni ngrok.
 
-El mensaje incluye severidad, explicación, causa probable, plan de corrección y confianza.
-El botón inline llama a `POST /api/v1/block-ip`. La deduplicación evita un mensaje por evento:
-las actualizaciones de conteo no renotifican y una escalada edita el mismo mensaje.
+El mensaje incluye severidad, clasificación MITRE, explicación, causa probable, plan de
+corrección y confianza. El botón inline llama a `POST /api/v1/block-ip`. La deduplicación evita
+un mensaje por evento: las actualizaciones de conteo no renotifican y una escalada edita el
+mismo mensaje.
+
+## Campaña de ataque (sandbox)
+
+La campaña scripted ejecuta un kill chain acotado y profesional contra la app demo:
+
+1. Briefing y OPSEC: objetivo fijo, loopback y sin acciones fuera del sandbox.
+2. Fingerprinting: server, cabeceras, métodos y `robots.txt` (T1595/T1592).
+3. Discovery: enumeración de rutas y artefactos sintéticos (`/admin`, `/.env`,
+   `/.git/config`, `/backup.sql`, `/api/users`, `/debug`, `/server-status`, `/metrics`,
+   `/openapi.json`, `/docs`) y usuarios (T1083/T1087/T1552).
+4. Credential access: password spraying sobre usuarios enumerados y password guessing con
+   una secuencia fija de credenciales de prueba (T1110).
+5. Acceso y post-explotación: cookie de sesión de demo, acceso a `/admin` y evidencia
+   consolidada (T1078/T1083).
+6. Reporting: resumen con técnicas MITRE y estado de la campaña.
+
+La app demo contiene **artefactos sintéticos** expuestos para la simulación. No hay datos,
+credenciales ni secretos reales. El atacante no recibe un objetivo del cliente, del modelo ni
+del frontend; el host sigue fijo en el backend. El panel muestra fases, intentos, rutas,
+técnicas MITRE y un resumen de campaña.
 
 ## Guion de demo (3 minutos)
 
 1. **Problema (15 s).** “Una pyme tiene un login expuesto y nadie mira los logs.”
 2. **Escaneo (20 s).** Pulsa `Escanear`. Aparecen cuatro hallazgos; destaca
    “Sin rate limit”, el que se explotará en vivo.
-3. **Ataque (45 s).** Pulsa `Atacar (scripted)`. La terminal izquierda narra
-   reconocimiento, rutas y fuerza bruta. A los cinco fallos nace la alerta; el éxito
-   posterior la escala a “Éxito tras fallos”.
-4. **Defensa (45 s).** La terminal derecha muestra la explicación de la IA, el plan y los
-   hallazgos correlacionados. Si Telegram está configurado, llega el mensaje y el botón
+3. **Ataque (45 s).** Pulsa `Atacar (scripted)`. La terminal izquierda muestra las fases
+   de red team, fingerprinting, enumeración, spraying, guessing y post-explotación, con
+   técnicas MITRE. A los cinco fallos nace la alerta; el éxito posterior la escala a
+   “Éxito tras fallos”.
+4. **Defensa (45 s).** La terminal derecha muestra severidad, clasificación MITRE,
+   explicación de Groq, plan priorizado, hallazgos correlacionados y el aviso de
+   aprobación humana. Si Telegram está configurado, llega el mensaje con el botón
    `Bloquear IP`.
 5. **Decisión humana (20 s).** Pulsa `Bloquear IP` (panel o Telegram). Los hallazgos pasan
    a mitigados y la IP queda bloqueada.
@@ -192,6 +226,8 @@ flujo de ataque de la demo.
 - IA con JSON validado por Pydantic y plantilla de respaldo.
 - Detección y bloqueo deterministas, independientes de la IA.
 - Panel sin credenciales visibles y sin login (alcance congelado).
+- Campaña ofensiva limitada al sandbox: sin objetivo externo, sin exfiltración real y con
+  artefactos/credenciales sintéticas.
 - Servidores en `127.0.0.1`; la app demo es intencionalmente vulnerable, no la publiques.
 
 ## Pruebas
@@ -219,10 +255,12 @@ rm -f data/sentinel.db data/sentinel.db-wal data/sentinel.db-shm
 La verificación de UI se hizo con Chrome headless sobre el flujo real: escanear → atacar →
 alerta con IA → bloquear → segundo ataque detenido, sin errores de consola.
 
-Las integraciones con Claude y Telegram están implementadas y probadas en su lógica,
-validación y respaldo. Para probarlas en vivo hay que colocar claves válidas en `.env`; sin
-`ANTHROPIC_API_KEY` se ejerció la plantilla defensora y el modo agéntico cayó al plan
-scripted. Sin token de Telegram no se envía mensaje, pero el resto del flujo continúa.
+La integración con Groq se verificó en vivo con `openai/gpt-oss-120b`: la defensora devolvió
+JSON validado y el atacante agéntico ejecutó tool calling con reintentos ante 429 del plan
+free. La campaña scripted y el panel red team/SOC se verificaron con la UI real. La entrega
+por Telegram se verificó con un mensaje real con botón inline. Las claves viven solo en
+`.env` (ignorado por Git) y nunca se incluyen en logs, panel, prompts o commits. Sin claves
+externas, la defensa usa la plantilla y el atacante cae al modo scripted.
 
 ## Estructura
 
@@ -234,7 +272,8 @@ backend/app/
   rules.py         reglas puras y testeables
   service.py       ingesta, deduplicación, escalada y publicación
   scanner.py       cuatro chequeos fijos
-  ai.py            Claude, validación Pydantic, plantilla de respaldo
+  groq_client.py   cliente OpenAI-compatible, retry 429 y extracción de respuestas
+  ai.py            Groq/Anthropic, validación Pydantic y plantilla de respaldo
   telegram.py      long polling, botón inline y edición
   attacker.py      scripted + tool calling acotado
   processor.py     correlación → IA → guardado → Telegram → WS
@@ -252,6 +291,8 @@ backend/tests/     reglas, API, IA y sanitización
 - [ ] Video del flujo completo (paso manual del equipo).
 - [x] Botón/comando de alerta de ejemplo (`Alerta demo` / `scripts/simulate_alert.sh`).
 - [x] Guion de 3 minutos y mención de guardrails.
+- [x] Campaña por fases con MITRE y panel red team/SOC.
 - [x] Sin contraseñas visibles en panel, logs o mensajes.
+- [x] Claves de Groq/Telegram fuera de Git (solo en `.env` local).
 
 La demo no debe exponerse fuera de `127.0.0.1`.

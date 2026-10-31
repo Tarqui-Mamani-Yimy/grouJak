@@ -32,6 +32,7 @@ def test_telegram_message_has_context_and_no_password() -> None:
     message = build_message(alert)
 
     assert "Éxito tras fallos" in message
+    assert "MITRE: T1110 + T1078" in message
     assert "203.0.113.7" in message
     assert "24" in message
     assert "ana" in message

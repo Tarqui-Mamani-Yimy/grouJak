@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import Any, Literal
 import httpx
 
 from .config import DEMO_CLIENT_IP_HEADER, get_settings
+from .groq_client import extract_content, groq_chat_completion
 from .schemas import AttackerLogLine, clean_text
 from .ws import manager
 
@@ -19,7 +21,19 @@ SECURITY_HEADERS = (
     "X-Frame-Options",
     "Content-Security-Policy",
 )
-FIXED_PATHS = ("/admin", "/.env", "/.git/config")
+FIXED_PATHS = (
+    "/robots.txt",
+    "/admin",
+    "/.env",
+    "/.git/config",
+    "/backup.sql",
+    "/api/users",
+    "/debug",
+    "/server-status",
+    "/metrics",
+    "/openapi.json",
+    "/docs",
+)
 BASE_PASSWORDS = (
     "123456",
     "password",
@@ -45,24 +59,33 @@ BASE_PASSWORDS = (
     "ninja",
     "mustang",
 )
+SPRAY_USERS = ("admin", "soporte")
+SPRAY_PASSWORDS = BASE_PASSWORDS[:3]
 MAX_TOOL_ATTEMPTS = 30
 
-SYSTEM_PROMPT = """Eres un pentester autorizado probando SOLO una app de demo local. El objetivo es fijo y no puedes cambiarlo. Solo puedes actuar mediante las herramientas disponibles; no escribes ni ejecutas código libre. Narra cada paso en español, una frase corta por acción. Tu objetivo es probar si el login resiste fuerza bruta con la lista fija de credenciales: llama a probar_login repetidamente hasta tener éxito o agotar los intentos. Nunca escribas contraseñas ni credenciales en el texto."""
+SYSTEM_PROMPT = """Eres el operador de una campaña de red team autorizada contra una app de demo local y aislada. El objetivo es fijo (app-login-demo) y no puedes cambiarlo. Solo actúas mediante las herramientas disponibles; no ejecutas código libre, no sales del sandbox y no exfiltres datos reales. Metodología: fingerprinting, enumeración de superficie y usuarios, credential access (password spraying y guessing con la lista fija), acceso inicial y post-explotación. Narra cada acción en español técnico en UNA sola frase de máximo 25 palabras; no uses Markdown, no repitas el informe y cita técnicas MITRE ATT&CK cuando aplique (T1595, T1083, T1087, T1110, T1078). No inventes objetivos y no menciones valores de credenciales, ni siquiera inventados."""
+
+AGENT_USER_PROMPT = (
+    "Inicia una campaña de red team contra el objetivo fijo. Trabaja por fases: "
+    "fingerprinting, enumeración de rutas/artefactos y usuarios, credential access "
+    "con la lista fija, acceso inicial y reporte. Usa las herramientas, narra con "
+    "técnica, cita MITRE y no salgas del sandbox."
+)
 
 TOOLS = [
     {
         "name": "revisar_rutas",
-        "description": "Prueba una lista fija de rutas comunes (/admin, /.env, /.git/config) contra el objetivo fijo.",
+        "description": "Enumera una lista fija de rutas y artefactos comunes (/robots.txt, /admin, /.env, /.git/config, /backup.sql, /api/users, /debug, /server-status, /metrics, /openapi.json, /docs) contra el objetivo fijo.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "revisar_headers",
-        "description": "Pide la página principal y devuelve qué cabeceras de seguridad faltan.",
+        "description": "Hace fingerprinting HTTP: server, cabeceras de seguridad faltantes y superficie de la app.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "probar_login",
-        "description": "Intenta un login usando la siguiente credencial de una lista fija de prueba. Los parámetros usuario/clave son ignorados; nunca se usan credenciales reales.",
+        "description": "Intenta el siguiente par de una lista fija de credenciales de prueba (spraying/guessing). Los parámetros usuario/clave son ignorados; nunca usa credenciales reales.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -74,7 +97,7 @@ TOOLS = [
     },
     {
         "name": "reportar_hallazgo",
-        "description": "Registra un resumen de lo encontrado y por qué lo probó.",
+        "description": "Registra un hallazgo, su impacto y la técnica MITRE asociada.",
         "input_schema": {
             "type": "object",
             "properties": {"resumen": {"type": "string"}},
@@ -84,19 +107,24 @@ TOOLS = [
 ]
 
 
-def _credentials() -> list[str]:
+def _credentials(success_at: int = 7) -> list[str]:
     settings = get_settings()
-    prefix = [item for item in BASE_PASSWORDS if item != settings.demo_password][:6]
-    rest = [
-        item
-        for item in BASE_PASSWORDS
-        if item != settings.demo_password and item not in prefix
-    ]
+    wrong = [item for item in BASE_PASSWORDS if item != settings.demo_password]
+    prefix = wrong[: max(success_at - 1, 0)]
+    rest = [item for item in wrong if item not in prefix]
     return (prefix + [settings.demo_password] + rest)[:24]
 
 
 def _sanitize(text: str, limit: int = 700) -> str:
     cleaned = clean_text(text)
+    cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
+    cleaned = cleaned.replace("*", "")
+    cleaned = re.sub(r"(?i)password\d+", "[credencial oculta]", cleaned)
+    cleaned = re.sub(
+        r"(?i)(credencial(?:es)?[^()]{0,40})\(([^()]{1,40})\)",
+        r"\1([credencial oculta])",
+        cleaned,
+    )
     cleaned = re.sub(r"\s+", " ", cleaned)
     secrets = [get_settings().demo_password, *BASE_PASSWORDS]
     for secret in sorted(set(secrets), key=len, reverse=True):
@@ -129,11 +157,41 @@ def _is_blocked(response: httpx.Response) -> bool:
     return response.status_code in {403, 423, 429}
 
 
+async def _post_exploitation(
+    client: httpx.AsyncClient, user: str, exposed_count: int
+) -> None:
+    try:
+        admin = await client.get("/admin")
+        admin_status = admin.status_code
+    except httpx.HTTPError:
+        admin_status = "sin respuesta"
+    verdict = (
+        "superficie administrativa comprometida"
+        if admin_status == 200
+        else "sin acceso administrativo"
+    )
+    await broadcast_line(
+        "probe_path",
+        f"[FASE 4 · POST-EXPLOTACIÓN] [T1083] GET /admin → HTTP {admin_status} · {verdict}.",
+    )
+    await broadcast_line(
+        "recon",
+        "[FASE 5 · REPORTING] [T1595/T1083/T1110/T1078] Campaña completada: "
+        f"cuenta '{user}' comprometida; {exposed_count} rutas/artefactos expuestos; "
+        "rate limit ausente; evidencia consolidada para el defensor.",
+    )
+
+
 async def _run_scripted() -> None:
     settings = get_settings()
-    credentials = _credentials()
+    credentials = _credentials(success_at=12)
+    spray = [
+        (user, password) for user in SPRAY_USERS for password in SPRAY_PASSWORDS
+    ]
     await broadcast_line(
-        "recon", "Objetivo fijo: app-login-demo. Iniciando reconocimiento autorizado."
+        "recon",
+        "[FASE 0 · BRIEFING] [OPSEC] Campaña de red team autorizada contra "
+        "app-login-demo (loopback). Source 203.0.113.7. Sin acciones fuera del sandbox.",
     )
 
     async with _client() as client:
@@ -143,31 +201,202 @@ async def _run_scripted() -> None:
             await broadcast_line("recon", "Atacante detenido: el objetivo no responde.")
             return
 
+        server = root.headers.get("server", "desconocido")
+        content_type = root.headers.get("content-type", "desconocido")
+        await broadcast_line(
+            "recon",
+            f"[FASE 1 · RECON] [T1595] Fingerprinting HTTP: status {root.status_code} · "
+            f"server {server} · content-type {content_type}.",
+        )
         missing = _missing_headers(root)
         if missing:
             await broadcast_line(
                 "recon",
-                "Cabeceras de seguridad ausentes: " + ", ".join(missing) + ".",
+                "[FASE 1 · RECON] [T1592] Cabeceras de seguridad ausentes: "
+                + ", ".join(missing)
+                + ".",
             )
         else:
-            await broadcast_line("recon", "No faltan las cabeceras revisadas.")
+            await broadcast_line(
+                "recon", "[FASE 1 · RECON] [T1592] No faltan las cabeceras revisadas."
+            )
 
-        for path in FIXED_PATHS:
-            try:
-                response = await client.get(path)
-            except httpx.HTTPError:
-                await broadcast_line("probe_path", f"Ruta {path}: sin respuesta.")
-                continue
-            if response.status_code == 200:
+        try:
+            options = await client.options("/login")
+            allow = options.headers.get("allow", "no expuesto")
+            await broadcast_line(
+                "recon",
+                f"[FASE 1 · RECON] [T1595] OPTIONS /login → HTTP {options.status_code} · "
+                f"Allow: {allow}.",
+            )
+        except httpx.HTTPError:
+            await broadcast_line(
+                "recon", "[FASE 1 · RECON] [T1595] OPTIONS /login sin respuesta."
+            )
+
+        try:
+            robots = await client.get("/robots.txt")
+            if robots.status_code == 200:
+                disallow = [
+                    line.split(":", 1)[1].strip()
+                    for line in robots.text.splitlines()
+                    if line.lower().startswith("disallow:")
+                ]
+                revealed = ", ".join(disallow) if disallow else "sin rutas"
                 await broadcast_line(
-                    "probe_path", f"Ruta {path} accesible sin autenticación (HTTP 200)."
+                    "recon",
+                    f"[FASE 1 · RECON] [T1083] robots.txt expuesto; rutas reveladas: "
+                    f"{revealed}.",
                 )
             else:
                 await broadcast_line(
-                    "probe_path", f"Ruta {path} responde HTTP {response.status_code}."
+                    "recon",
+                    f"[FASE 1 · RECON] [T1083] robots.txt → HTTP {robots.status_code}.",
+                )
+        except httpx.HTTPError:
+            await broadcast_line(
+                "recon", "[FASE 1 · RECON] [T1083] robots.txt sin respuesta."
+            )
+
+        exposed: list[str] = []
+        await broadcast_line(
+            "recon",
+            "[FASE 2 · DISCOVERY] [T1595] Iniciando enumeración de superficie y artefactos.",
+        )
+        for path in FIXED_PATHS:
+            if path == "/robots.txt":
+                continue
+            try:
+                response = await client.get(path)
+            except httpx.HTTPError:
+                await broadcast_line(
+                    "probe_path",
+                    f"[FASE 2 · DISCOVERY] [T1083] GET {path} → sin respuesta.",
+                )
+                continue
+
+            status = response.status_code
+            if status == 200:
+                exposed.append(path)
+                await broadcast_line(
+                    "probe_path",
+                    f"[FASE 2 · DISCOVERY] [T1083] GET {path} → HTTP 200 · EXPOSED.",
+                )
+            else:
+                await broadcast_line(
+                    "probe_path",
+                    f"[FASE 2 · DISCOVERY] [T1083] GET {path} → HTTP {status}.",
                 )
 
-        total = len(credentials)
+            if path == "/api/users" and status == 200:
+                try:
+                    users = response.json().get("users", [])
+                    if users:
+                        await broadcast_line(
+                            "recon",
+                            "[FASE 2 · DISCOVERY] [T1087] Usuarios enumerados: "
+                            + ", ".join(str(item) for item in users[:10])
+                            + ".",
+                        )
+                except Exception:
+                    pass
+            if path == "/backup.sql" and status == 200:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 2 · DISCOVERY] [T1552] backup.sql expuesto "
+                    "(sintético, sin datos reales).",
+                )
+            if path == "/debug" and status == 200:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 2 · DISCOVERY] [T1592] traza de depuración expuesta.",
+                )
+            if path in ("/openapi.json", "/docs") and status == 200:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 2 · DISCOVERY] [T1592] documentación/esquema de API expuesto.",
+                )
+            if path == "/.env" and status == 200:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 2 · DISCOVERY] [T1552] .env expuesto; configuración "
+                    "sintética de demo, sin secretos reales.",
+                )
+            if path == "/.git/config" and status == 200:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 2 · DISCOVERY] [T1592] metadatos del repositorio expuestos.",
+                )
+            if path == "/admin" and status == 200:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 2 · DISCOVERY] [T1083] panel administrativo accesible "
+                    "sin autenticación.",
+                )
+            if path == "/server-status" and status == 200:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 2 · DISCOVERY] [T1592] server-status expuesto.",
+                )
+            if path == "/metrics" and status == 200:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 2 · DISCOVERY] [T1592] métricas operativas expuestas.",
+                )
+            await asyncio.sleep(0.12)
+
+        await broadcast_line(
+            "recon",
+            f"[FASE 3 · CREDENTIAL ACCESS] [T1110.003] Password spraying: "
+            f"{len(SPRAY_USERS)} usuarios × {len(SPRAY_PASSWORDS)} claves "
+            f"({len(spray)} intentos, valores ocultos).",
+        )
+        for spray_index, (user, password) in enumerate(spray, start=1):
+            try:
+                response = await client.post(
+                    "/login", data={"username": user, "password": password}
+                )
+            except httpx.HTTPError:
+                await broadcast_line(
+                    "recon", "Atacante detenido: error de conexión durante spraying."
+                )
+                return
+            if _is_blocked(response):
+                await broadcast_line(
+                    "blocked",
+                    "[FASE 3 · CREDENTIAL ACCESS] Atacante detenido: IP bloqueada "
+                    f"por el defensor durante spraying ({spray_index}/{len(spray)}).",
+                )
+                return
+            if response.status_code == 200:
+                cookie_note = (
+                    "cookie de sesión emitida (valor no mostrado)"
+                    if response.cookies.get("demo_session")
+                    else "sin cookie de sesión"
+                )
+                await broadcast_line(
+                    "brute_force_success",
+                    f"[FASE 4 · INITIAL ACCESS] [T1078] Spraying exitoso como "
+                    f"'{user}' · {cookie_note}.",
+                )
+                await _post_exploitation(client, user, len(exposed))
+                await broadcast_line(
+                    "recon", "Atacante detenido: campaña de red team completada."
+                )
+                return
+            await broadcast_line(
+                "brute_force_attempt",
+                f"[FASE 3 · CREDENTIAL ACCESS] [T1110.003] Spraying '{user}' "
+                f"({spray_index}/{len(spray)}) · credencial rechazada.",
+            )
+            await asyncio.sleep(0.12)
+
+        await broadcast_line(
+            "recon",
+            f"[FASE 3 · CREDENTIAL ACCESS] [T1110.001] Password guessing dirigido "
+            f"contra '{settings.demo_user}' · secuencia fija de {len(credentials)} "
+            "credenciales.",
+        )
         for index, password in enumerate(credentials, start=1):
             try:
                 response = await client.post(
@@ -183,28 +412,40 @@ async def _run_scripted() -> None:
             if _is_blocked(response):
                 await broadcast_line(
                     "blocked",
-                    f"Atacante detenido: IP bloqueada por el defensor "
-                    f"(intento {index}/{total}).",
+                    "[FASE 3 · CREDENTIAL ACCESS] Atacante detenido: IP bloqueada "
+                    f"por el defensor (intento {index}/{len(credentials)}).",
                 )
                 return
 
             if response.status_code == 200:
+                cookie_note = (
+                    "cookie de sesión emitida (valor no mostrado)"
+                    if response.cookies.get("demo_session")
+                    else "sin cookie de sesión"
+                )
                 await broadcast_line(
                     "brute_force_success",
-                    f"Intento {index}/{total}: acceso concedido como "
-                    f"'{settings.demo_user}'.",
+                    f"[FASE 4 · INITIAL ACCESS] [T1078] Intento {index}/"
+                    f"{len(credentials)}: acceso válido como '{settings.demo_user}' "
+                    f"· {cookie_note}.",
                 )
-                await broadcast_line("recon", "Atacante detenido: acceso obtenido.")
+                await _post_exploitation(client, settings.demo_user, len(exposed))
+                await broadcast_line(
+                    "recon", "Atacante detenido: campaña de red team completada."
+                )
                 return
 
             await broadcast_line(
                 "brute_force_attempt",
-                f"Intento {index}/{total} contra '{settings.demo_user}': "
-                "credenciales rechazadas.",
+                f"[FASE 3 · CREDENTIAL ACCESS] [T1110.001] Intento {index}/"
+                f"{len(credentials)} contra '{settings.demo_user}' · "
+                "credencial rechazada.",
             )
             await asyncio.sleep(0.18)
 
-    await broadcast_line("recon", "Atacante detenido: secuencia completada sin acceso.")
+    await broadcast_line(
+        "recon", "Atacante detenido: campaña completada sin acceso."
+    )
 
 
 @dataclass
@@ -258,12 +499,14 @@ class Toolbox:
     async def revisar_headers(self) -> ToolResult:
         response = await self.client.get("/")
         missing = _missing_headers(response)
+        server = response.headers.get("server", "desconocido")
+        prefix = f"Fingerprinting: server {server}. "
         if missing:
             return ToolResult(
-                "Cabeceras de seguridad ausentes: " + ", ".join(missing) + ".",
+                prefix + "Cabeceras de seguridad ausentes: " + ", ".join(missing) + ".",
                 action="recon",
             )
-        return ToolResult("No faltan las cabeceras revisadas.", action="recon")
+        return ToolResult(prefix + "No faltan las cabeceras revisadas.", action="recon")
 
     async def probar_login(self) -> ToolResult:
         settings = get_settings()
@@ -296,9 +539,14 @@ class Toolbox:
                 blocked=True,
             )
         if response.status_code == 200:
+            cookie_note = (
+                " cookie de sesión emitida (valor no mostrado)."
+                if response.cookies.get("demo_session")
+                else " sin cookie de sesión."
+            )
             return ToolResult(
                 f"Intento {self.index}/{total}: acceso concedido como "
-                f"'{settings.demo_user}'.",
+                f"'{settings.demo_user}'.{cookie_note}",
                 action="brute_force_success",
                 success=True,
             )
@@ -314,9 +562,9 @@ class Toolbox:
         )
 
 
-async def _run_agentic() -> None:
+async def _run_agentic_anthropic() -> None:
     settings = get_settings()
-    if not settings.ai_enabled:
+    if not settings.anthropic_api_key:
         await broadcast_line(
             "recon", "IA no configurada; ejecutando secuencia scripted de respaldo."
         )
@@ -330,14 +578,7 @@ async def _run_agentic() -> None:
     )
     client = AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=25.0)
     messages: list[dict[str, Any]] = [
-        {
-            "role": "user",
-            "content": (
-                "Decide qué revisar primero. Usa las herramientas y narra cada paso. "
-                "El objetivo es comprobar la resistencia del login a fuerza bruta con la "
-                "lista fija; sigue intentando logins hasta tener éxito o agotar intentos."
-            ),
-        }
+        {"role": "user", "content": AGENT_USER_PROMPT}
     ]
 
     async with _client() as http_client:
@@ -355,7 +596,7 @@ async def _run_agentic() -> None:
             tool_uses: list[Any] = []
             for block in response.content:
                 if getattr(block, "type", "") == "text" and block.text.strip():
-                    await broadcast_line("recon", block.text)
+                    await broadcast_line("recon", block.text[:320])
                     assistant_blocks.append({"type": "text", "text": block.text})
                 elif getattr(block, "type", "") == "tool_use":
                     assistant_blocks.append(
@@ -405,12 +646,166 @@ async def _run_agentic() -> None:
             if blocked:
                 return
             if success:
-                await broadcast_line("recon", "Atacante detenido: acceso obtenido.")
+                await broadcast_line(
+                    "recon",
+                    "[FASE 5 · REPORTING] [T1078] Acceso válido confirmado; "
+                    "evidencia de superficie expuesta reportada al defensor.",
+                )
+                await broadcast_line(
+                    "recon", "Atacante detenido: campaña de red team completada."
+                )
                 return
             if finished:
                 return
 
     await broadcast_line("recon", "Atacante detenido: límite de pasos alcanzado.")
+
+
+def _openai_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool["description"],
+                "parameters": tool["input_schema"],
+            },
+        }
+        for tool in TOOLS
+    ]
+
+
+async def _run_agentic_groq() -> None:
+    settings = get_settings()
+    await broadcast_line(
+        "recon", "Modelo atacante Groq iniciado. Objetivo fijo: app-login-demo."
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": AGENT_USER_PROMPT},
+    ]
+    tools = _openai_tools()
+
+    async with _client() as http_client:
+        toolbox = Toolbox(http_client)
+        for step in range(settings.max_attack_steps):
+            try:
+                data = await groq_chat_completion(
+                    messages,
+                    tools=tools,
+                    max_tokens=400,
+                    temperature=0.3,
+                    deadline_seconds=60.0,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "El atacante Groq no respondió (%s)", type(exc).__name__
+                )
+                await broadcast_line(
+                    "recon", "Atacante detenido: proveedor IA no disponible."
+                )
+                return
+
+            content = extract_content(data)
+            message = (data.get("choices") or [{}])[0].get("message") or {}
+            raw_calls = message.get("tool_calls") or []
+            usage = data.get("usage") or {}
+            logger.info(
+                "Groq atacante paso %s · tool_calls=%s · total_tokens=%s",
+                step + 1,
+                len(raw_calls),
+                usage.get("total_tokens"),
+            )
+            if content.strip():
+                await broadcast_line("recon", content[:320])
+
+            calls: list[tuple[str, str, Any]] = []
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": content or None,
+            }
+            if raw_calls:
+                tool_calls_payload = []
+                for index, call in enumerate(raw_calls):
+                    function = call.get("function") or {}
+                    call_id = call.get("id") or f"call_{step}_{index}"
+                    name = function.get("name") or ""
+                    arguments = function.get("arguments") or "{}"
+                    calls.append((call_id, name, arguments))
+                    tool_calls_payload.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        }
+                    )
+                assistant_message["tool_calls"] = tool_calls_payload
+
+            messages.append(assistant_message)
+
+            if not calls:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Continúa usando una de las herramientas disponibles.",
+                    }
+                )
+                continue
+
+            blocked = False
+            success = False
+            for call_id, name, raw_arguments in calls:
+                try:
+                    arguments = (
+                        json.loads(raw_arguments)
+                        if isinstance(raw_arguments, str)
+                        else raw_arguments
+                    )
+                except (TypeError, json.JSONDecodeError):
+                    arguments = {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                result = await toolbox.execute(name, arguments)
+                await broadcast_line(result.action, result.summary)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": result.summary,
+                    }
+                )
+                if result.blocked:
+                    blocked = True
+                if result.success:
+                    success = True
+
+            if blocked:
+                return
+            if success:
+                await broadcast_line(
+                    "recon",
+                    "[FASE 5 · REPORTING] [T1078] Acceso válido confirmado; "
+                    "evidencia de superficie expuesta reportada al defensor.",
+                )
+                await broadcast_line(
+                    "recon", "Atacante detenido: campaña de red team completada."
+                )
+                return
+
+    await broadcast_line("recon", "Atacante detenido: límite de pasos alcanzado.")
+
+
+async def _run_agentic() -> None:
+    provider = get_settings().active_llm_provider
+    if provider == "groq":
+        await _run_agentic_groq()
+    elif provider == "anthropic":
+        await _run_agentic_anthropic()
+    else:
+        await broadcast_line(
+            "recon", "IA no configurada; ejecutando secuencia scripted de respaldo."
+        )
+        await _run_scripted()
 
 
 class AttackerRunner:

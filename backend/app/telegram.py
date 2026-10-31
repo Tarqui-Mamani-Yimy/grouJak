@@ -17,6 +17,11 @@ RULE_LABELS = {
     "success_after_failures": "Éxito tras fallos",
 }
 
+MITRE_LABELS = {
+    "brute_force": "T1110 · Brute Force",
+    "success_after_failures": "T1110 + T1078 · Brute Force → Valid Accounts",
+}
+
 
 def _line(value: str, limit: int = 200) -> str:
     return clean_text(value)[:limit]
@@ -32,6 +37,7 @@ def build_message(alert: Alert) -> str:
 
     lines = [
         f"🛡️ ALERTA {severity} · {RULE_LABELS.get(alert.rule, alert.rule)}",
+        f"MITRE: {MITRE_LABELS.get(alert.rule, 'sin clasificar')}",
         f"Activo: {_line(alert.host, 80)}",
         f"IP: {alert.source_ip}",
         f"Usuario: {_line(alert.user, 80)}",

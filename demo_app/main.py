@@ -99,6 +99,35 @@ FAKE_GIT_CONFIG = """[core]
 \turl = https://example.invalid/demo/app-login.git
 """
 
+ROBOTS_TXT = """User-agent: *
+Disallow: /admin
+Disallow: /backup.sql
+Disallow: /.env
+"""
+
+SERVER_STATUS = """server: uvicorn/demo
+status: ok
+uptime: 42m
+requests: 1337
+"""
+
+FAKE_BACKUP = """-- Synthetic demo backup. No real credentials or data.
+CREATE TABLE users (id INTEGER, username TEXT, password_hash TEXT);
+-- demo rows intentionally omitted
+"""
+
+FAKE_DEBUG = """Traceback (most recent call last):
+  File "demo_app/main.py", line 42, in login
+    validate_credentials(user)
+RuntimeError: synthetic demo trace, no real data
+"""
+
+FAKE_METRICS = """# HELP demo_requests_total Synthetic demo metric
+# TYPE demo_requests_total counter
+demo_requests_total{path="/login"} 42
+demo_requests_total{path="/admin"} 7
+"""
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -193,7 +222,16 @@ async def login(
         )
 
     if success:
-        return PlainTextResponse(f"Acceso concedido. Bienvenida, {settings.demo_user}.")
+        response = PlainTextResponse(
+            f"Acceso concedido. Bienvenida, {settings.demo_user}."
+        )
+        response.set_cookie(
+            "demo_session",
+            "demo-session-token",
+            httponly=True,
+            samesite="lax",
+        )
+        return response
     return PlainTextResponse("Credenciales inválidas.", status_code=401)
 
 
@@ -212,6 +250,39 @@ async def fake_env() -> str:
 @app.get("/.git/config", response_class=PlainTextResponse)
 async def fake_git_config() -> str:
     return FAKE_GIT_CONFIG
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots() -> str:
+    return ROBOTS_TXT
+
+
+@app.get("/server-status", response_class=PlainTextResponse)
+async def server_status() -> str:
+    return SERVER_STATUS
+
+
+@app.get("/api/users")
+async def fake_users() -> dict:
+    return {
+        "source": "synthetic-demo",
+        "users": [get_settings().demo_user, "admin", "soporte"],
+    }
+
+
+@app.get("/backup.sql", response_class=PlainTextResponse)
+async def fake_backup() -> str:
+    return FAKE_BACKUP
+
+
+@app.get("/debug", response_class=PlainTextResponse)
+async def fake_debug() -> str:
+    return FAKE_DEBUG
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def fake_metrics() -> str:
+    return FAKE_METRICS
 
 
 @app.get("/health")

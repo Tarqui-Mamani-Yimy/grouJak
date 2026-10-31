@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import model_validator
@@ -40,6 +41,11 @@ class Settings(BaseSettings):
     brute_force_window_seconds: int = 60
     alert_dedup_seconds: int = 300
 
+    llm_provider: Literal["groq", "anthropic"] = "groq"
+    groq_api_key: str = ""
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-5-5"
 
@@ -67,6 +73,13 @@ class Settings(BaseSettings):
         self.demo_attacker_source_ip = str(
             ipaddress.ip_address(self.demo_attacker_source_ip)
         )
+        if self.groq_api_key:
+            parsed = urlparse(self.groq_base_url)
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise ValueError("groq_base_url debe ser una URL HTTPS válida")
+            self.groq_base_url = self.groq_base_url.rstrip("/")
+        if not self.groq_model.strip():
+            raise ValueError("groq_model no puede estar vacío")
         return self
 
     @staticmethod
@@ -90,8 +103,28 @@ class Settings(BaseSettings):
         return bool(self.telegram_bot_token and self.telegram_chat_id)
 
     @property
+    def groq_enabled(self) -> bool:
+        return bool(self.groq_api_key)
+
+    @property
+    def active_llm_provider(self) -> Literal["groq", "anthropic", "none"]:
+        if self.llm_provider == "groq" and self.groq_api_key:
+            return "groq"
+        if self.llm_provider == "anthropic" and self.anthropic_api_key:
+            return "anthropic"
+        if self.groq_api_key:
+            return "groq"
+        if self.anthropic_api_key:
+            return "anthropic"
+        return "none"
+
+    @property
+    def llm_enabled(self) -> bool:
+        return self.active_llm_provider != "none"
+
+    @property
     def ai_enabled(self) -> bool:
-        return bool(self.anthropic_api_key)
+        return self.llm_enabled
 
 
 @lru_cache

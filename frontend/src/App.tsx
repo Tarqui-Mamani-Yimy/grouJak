@@ -20,6 +20,13 @@ const RULE_LABELS: Record<Rule, string> = {
   success_after_failures: "Éxito tras fallos",
 };
 
+const MITRE_BY_RULE: Record<Rule, string> = {
+  brute_force: "T1110 · BRUTE FORCE",
+  success_after_failures: "T1110 + T1078 · VALID ACCOUNTS",
+};
+
+const ATTACK_TECHNIQUES = "T1595 · T1083 · T1087 · T1110 · T1078";
+
 const SEVERITY_LABELS: Record<Severity, string> = {
   low: "Baja",
   medium: "Media",
@@ -98,6 +105,7 @@ function AlertCard({ alert, findings, blocking, onBlock }: AlertCardProps) {
       <div className="alert-top">
         <span className={`severity-badge ${severity}`}>{SEVERITY_LABELS[severity]}</span>
         <span className="rule-label">{RULE_LABELS[alert.rule]}</span>
+        <span className="mitre-chip">{MITRE_BY_RULE[alert.rule]}</span>
         {alert.blocked && <span className="blocked-badge">IP bloqueada</span>}
         <span className="alert-time">{formatDateTime(alert.created_at)}</span>
       </div>
@@ -127,6 +135,11 @@ function AlertCard({ alert, findings, blocking, onBlock }: AlertCardProps) {
           <span>Alerta</span>
           <strong>#{alert.id}</strong>
         </div>
+      </div>
+
+      <div className="ai-head">
+        <span>IA DEFENSORA · ANÁLISIS AUTOMÁTICO</span>
+        <span>{result ? "JSON VALIDADO" : "PROCESANDO"}</span>
       </div>
 
       {result ? (
@@ -166,6 +179,7 @@ function AlertCard({ alert, findings, blocking, onBlock }: AlertCardProps) {
         </div>
       )}
 
+      <div className="approval-note">APROBACIÓN HUMANA REQUERIDA</div>
       <button
         type="button"
         className={`btn block ${alert.blocked ? "is-blocked" : ""}`}
@@ -340,6 +354,69 @@ export default function App() {
     () => [...alerts].sort((a, b) => b.id - a.id),
     [alerts],
   );
+  const attackAttempts = useMemo(
+    () =>
+      lines.filter(
+        (line) =>
+          line.action === "brute_force_attempt" ||
+          line.action === "brute_force_success",
+      ).length,
+    [lines],
+  );
+  const attackDiscoveries = useMemo(
+    () =>
+      lines.filter(
+        (line) =>
+          line.action === "probe_path" &&
+          /HTTP 200|EXPOSED|accesible|comprometida/i.test(line.detail),
+      ).length,
+    [lines],
+  );
+  const attackSuccess = useMemo(
+    () => lines.some((line) => line.action === "brute_force_success"),
+    [lines],
+  );
+  const attackBlocked = useMemo(
+    () => lines.some((line) => line.action === "blocked"),
+    [lines],
+  );
+  const phaseInfo = useMemo(() => {
+    let label = "STANDBY";
+    const phases = new Set<string>();
+    for (const line of lines) {
+      const match = line.detail.match(/\[FASE\s+(\d+)\s*·\s*([^\]]+)\]/i);
+      if (match) {
+        label = `FASE ${match[1]} · ${match[2].trim()}`;
+        phases.add(match[1]);
+      }
+    }
+    return { label, count: phases.size };
+  }, [lines]);
+  const renderedLines = useMemo(() => {
+    const seen = new Set<string>();
+    return lines.map((line) => {
+      const match = line.detail.match(/\[FASE\s+(\d+)/i);
+      const isPhaseHeader = Boolean(match && !seen.has(match[1]));
+      if (match) {
+        seen.add(match[1]);
+      }
+      return { line, isPhaseHeader };
+    });
+  }, [lines]);
+  const outcomeClass = attackSuccess
+    ? "success"
+    : attackBlocked
+      ? "blocked"
+      : "stopped";
+  const outcomeLabel = attackSuccess
+    ? "ACCESO OBTENIDO"
+    : attackBlocked
+      ? "DEFENDIDO"
+      : attack === "stopped"
+        ? "SIN ACCESO"
+        : attack === "running"
+          ? "EN CURSO"
+          : "STANDBY";
 
   async function runScan() {
     setBusy("scan");
@@ -356,6 +433,7 @@ export default function App() {
 
   async function startAttack(mode: "scripted" | "agentic") {
     setError(null);
+    setLines([]);
     try {
       await apiPost("/api/v1/attacker/run", { mode });
       setAttack("running");
@@ -364,7 +442,7 @@ export default function App() {
       }
       watchdogRef.current = window.setTimeout(() => {
         setAttack((previous) => (previous === "running" ? "stopped" : previous));
-      }, 120_000);
+      }, 180_000);
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "No se pudo iniciar el ataque",
@@ -482,7 +560,7 @@ export default function App() {
           <header className="terminal-header">
             <div className="terminal-title">
               <span className="dot red" />
-              🔴 ATACANTE (IA)
+              🔴 ATACANTE · RED TEAM
             </div>
             <span className={`attack-state ${attack}`}>
               {attack === "running"
@@ -492,16 +570,46 @@ export default function App() {
                   : "en espera"}
             </span>
           </header>
+          <div className="attack-meta">
+            <div>
+              <span>TARGET</span>
+              <strong>app-login-demo</strong>
+            </div>
+            <div>
+              <span>SRC</span>
+              <strong>203.0.113.7</strong>
+            </div>
+            <div>
+              <span>PHASE</span>
+              <strong>{phaseInfo.label}</strong>
+            </div>
+            <div>
+              <span>ATTEMPTS</span>
+              <strong>{attackAttempts}</strong>
+            </div>
+            <div>
+              <span>ROUTES</span>
+              <strong>{attackDiscoveries}</strong>
+            </div>
+            <div>
+              <span>OPSEC</span>
+              <strong>LOOPBACK</strong>
+            </div>
+          </div>
+          <div className="attack-techniques">MITRE ATT&amp;CK · {ATTACK_TECHNIQUES}</div>
           <div className="terminal-body console" ref={consoleRef} aria-live="polite">
             {lines.length === 0 && (
               <p className="empty">
-                Consola de ataque vacía. Usa “Atacar (scripted)” o “Atacar
-                (agéntico)” para iniciar la simulación contra la app de demo.
+                Campaña lista. Lanza “Atacar (scripted)” para ejecutar el kill
+                chain de red team contra la app de demo, o “Atacar (agéntico)”
+                para el operador LLM.
               </p>
             )}
-            {lines.map((line, index) => (
+            {renderedLines.map(({ line, isPhaseHeader }, index) => (
               <div
-                className={`log-line ${line.action}`}
+                className={`log-line ${line.action} ${
+                  isPhaseHeader ? "phase-line" : ""
+                }`}
                 key={`${line.timestamp}-${index}`}
               >
                 <span className="prompt">$</span>
@@ -510,6 +618,31 @@ export default function App() {
                 <span className="detail">{line.detail}</span>
               </div>
             ))}
+            {attack === "running" && (
+              <span className="console-cursor" aria-hidden="true">
+                █
+              </span>
+            )}
+            {attack === "stopped" && lines.length > 0 && (
+              <div className={`attack-summary ${outcomeClass}`}>
+                <div>
+                  <span>CAMPAIGN</span>
+                  <strong>{outcomeLabel}</strong>
+                </div>
+                <div>
+                  <span>INTENTOS</span>
+                  <strong>{attackAttempts}</strong>
+                </div>
+                <div>
+                  <span>RUTAS</span>
+                  <strong>{attackDiscoveries}</strong>
+                </div>
+                <div>
+                  <span>FASES</span>
+                  <strong>{phaseInfo.count}</strong>
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
@@ -517,7 +650,7 @@ export default function App() {
           <header className="terminal-header">
             <div className="terminal-title">
               <span className="dot green" />
-              🛡️ DEFENSOR
+              🛡️ DEFENSOR · SOC
             </div>
             <span className="defender-counts">
               {openFindings} hallazgos abiertos · {alerts.length} alertas
@@ -586,8 +719,9 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        Objetivo fijo: app-login-demo · 127.0.0.1 · reglas deterministas → correlación
-        → IA → humano aprueba el bloqueo · sin credenciales en pantalla
+        SANDBOX AUTORIZADO · objetivo fijo app-login-demo (loopback) · reglas
+        deterministas → correlación → IA → aprobación humana · sin credenciales en
+        pantalla
       </footer>
     </div>
   );

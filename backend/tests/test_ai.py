@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from backend.app.ai import enforce_rule_floor, fallback_result, parse_ai_result
+from backend.app.ai import build_payload, enforce_rule_floor, fallback_result, parse_ai_result
 from backend.app.schemas import AIResult, Alert, Finding
 
 ALERT = Alert(
@@ -42,10 +42,19 @@ def test_parse_ai_result_rejects_invalid_confidence() -> None:
     assert parse_ai_result(text) is None
 
 
+def test_payload_distinguishes_failed_attempts_from_success() -> None:
+    payload = build_payload(ALERT, [FINDING])
+    assert payload["alert"]["count"] == 24
+    assert payload["alert"]["failed_attempts"] == 24
+    assert payload["alert"]["successful_login"] is True
+    assert payload["related_findings"][0]["check"] == "no_rate_limit"
+
+
 def test_fallback_uses_rules_not_ai_and_mentions_finding() -> None:
     result = fallback_result(ALERT, [FINDING])
     assert result.severity == "high"
     assert "203.0.113.7" in result.explanation
+    assert "T1110" in result.explanation
     assert "limita" in result.probable_cause
     assert result.confidence == 0.0
 
