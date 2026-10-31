@@ -233,7 +233,7 @@ export default function App() {
       });
       if (
         message.line.action === "blocked" ||
-        message.line.detail.includes("Atacante detenido") ||
+        message.line.detail.includes("GROWJAk detenido") ||
         message.line.detail.includes("Ataque detenido")
       ) {
         setAttack("stopped");
@@ -506,7 +506,7 @@ export default function App() {
           <span className="brand-mark">S</span>
           <div>
             <h1>SENTINEL</h1>
-            <p>Centro de operaciones · demo local</p>
+            <p>Centro de operaciones · GROWJAk + SOC</p>
           </div>
         </div>
         <div className="controls">
@@ -556,17 +556,17 @@ export default function App() {
       )}
 
       <main className="columns">
-        <section className="terminal attacker" aria-label="Consola del atacante">
+        <section className="terminal attacker" aria-label="Consola de GROWJAk">
           <header className="terminal-header">
             <div className="terminal-title">
               <span className="dot red" />
-              🔴 ATACANTE · RED TEAM
+              🔴 GROWJAk · RED TEAM
             </div>
             <span className={`attack-state ${attack}`}>
               {attack === "running"
                 ? "atacando…"
                 : attack === "stopped"
-                  ? "atacante detenido"
+                  ? "GROWJAk detenido"
                   : "en espera"}
             </span>
           </header>
@@ -600,7 +600,7 @@ export default function App() {
           <div className="terminal-body console" ref={consoleRef} aria-live="polite">
             {lines.length === 0 && (
               <p className="empty">
-                Campaña lista. Lanza “Atacar (scripted)” para ejecutar el kill
+                GROWJAk listo. Lanza “Atacar (scripted)” para ejecutar el kill
                 chain de red team contra la app de demo, o “Atacar (agéntico)”
                 para el operador LLM.
               </p>
@@ -719,9 +719,9 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        SANDBOX AUTORIZADO · objetivo fijo app-login-demo (loopback) · reglas
-        deterministas → correlación → IA → aprobación humana · sin credenciales en
-        pantalla
+        GROWJAk · sandbox autorizado · objetivo fijo app-login-demo (loopback) ·
+        reglas deterministas → correlación → IA → aprobación humana · sin
+        credenciales en pantalla
       </footer>
     </div>
   );

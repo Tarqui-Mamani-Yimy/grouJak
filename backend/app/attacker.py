@@ -63,7 +63,7 @@ SPRAY_USERS = ("admin", "soporte")
 SPRAY_PASSWORDS = BASE_PASSWORDS[:3]
 MAX_TOOL_ATTEMPTS = 30
 
-SYSTEM_PROMPT = """Eres el operador de una campaña de red team autorizada contra una app de demo local y aislada. El objetivo es fijo (app-login-demo) y no puedes cambiarlo. Solo actúas mediante las herramientas disponibles; no ejecutas código libre, no sales del sandbox y no exfiltres datos reales. Metodología: fingerprinting, enumeración de superficie y usuarios, credential access (password spraying y guessing con la lista fija), acceso inicial y post-explotación. Narra cada acción en español técnico en UNA sola frase de máximo 25 palabras; no uses Markdown, no repitas el informe y cita técnicas MITRE ATT&CK cuando aplique (T1595, T1083, T1087, T1110, T1078). No inventes objetivos y no menciones valores de credenciales, ni siquiera inventados."""
+SYSTEM_PROMPT = """Eres GROWJAk, el operador de una campaña de red team autorizada contra una app de demo local y aislada. El objetivo es fijo (app-login-demo) y no puedes cambiarlo. Solo actúas mediante las herramientas disponibles; no ejecutas código libre, no sales del sandbox y no exfiltres datos reales. Metodología: fingerprinting, enumeración de superficie y usuarios, credential access (password spraying y guessing con la lista fija), acceso inicial y post-explotación. Narra cada acción en español técnico en UNA sola frase de máximo 25 palabras; no uses Markdown, no repitas el informe y cita técnicas MITRE ATT&CK cuando aplique (T1595, T1083, T1087, T1110, T1078). No inventes objetivos y no menciones valores de credenciales, ni siquiera inventados."""
 
 AGENT_USER_PROMPT = (
     "Inicia una campaña de red team contra el objetivo fijo. Trabaja por fases: "
@@ -190,7 +190,7 @@ async def _run_scripted() -> None:
     ]
     await broadcast_line(
         "recon",
-        "[FASE 0 · BRIEFING] [OPSEC] Campaña de red team autorizada contra "
+        "[FASE 0 · BRIEFING] [OPSEC] GROWJAk inicia campaña de red team contra "
         "app-login-demo (loopback). Source 203.0.113.7. Sin acciones fuera del sandbox.",
     )
 
@@ -198,7 +198,7 @@ async def _run_scripted() -> None:
         try:
             root = await client.get("/")
         except httpx.HTTPError:
-            await broadcast_line("recon", "Atacante detenido: el objetivo no responde.")
+            await broadcast_line("recon", "GROWJAk detenido: el objetivo no responde.")
             return
 
         server = root.headers.get("server", "desconocido")
@@ -358,13 +358,13 @@ async def _run_scripted() -> None:
                 )
             except httpx.HTTPError:
                 await broadcast_line(
-                    "recon", "Atacante detenido: error de conexión durante spraying."
+                    "recon", "GROWJAk detenido: error de conexión durante spraying."
                 )
                 return
             if _is_blocked(response):
                 await broadcast_line(
                     "blocked",
-                    "[FASE 3 · CREDENTIAL ACCESS] Atacante detenido: IP bloqueada "
+                    "[FASE 3 · CREDENTIAL ACCESS] GROWJAk detenido: IP bloqueada "
                     f"por el defensor durante spraying ({spray_index}/{len(spray)}).",
                 )
                 return
@@ -381,7 +381,7 @@ async def _run_scripted() -> None:
                 )
                 await _post_exploitation(client, user, len(exposed))
                 await broadcast_line(
-                    "recon", "Atacante detenido: campaña de red team completada."
+                    "recon", "GROWJAk detenido: campaña de red team completada."
                 )
                 return
             await broadcast_line(
@@ -405,14 +405,14 @@ async def _run_scripted() -> None:
                 )
             except httpx.HTTPError:
                 await broadcast_line(
-                    "recon", "Atacante detenido: error de conexión con el objetivo."
+                    "recon", "GROWJAk detenido: error de conexión con el objetivo."
                 )
                 return
 
             if _is_blocked(response):
                 await broadcast_line(
                     "blocked",
-                    "[FASE 3 · CREDENTIAL ACCESS] Atacante detenido: IP bloqueada "
+                    "[FASE 3 · CREDENTIAL ACCESS] GROWJAk detenido: IP bloqueada "
                     f"por el defensor (intento {index}/{len(credentials)}).",
                 )
                 return
@@ -431,7 +431,7 @@ async def _run_scripted() -> None:
                 )
                 await _post_exploitation(client, settings.demo_user, len(exposed))
                 await broadcast_line(
-                    "recon", "Atacante detenido: campaña de red team completada."
+                    "recon", "GROWJAk detenido: campaña de red team completada."
                 )
                 return
 
@@ -444,7 +444,7 @@ async def _run_scripted() -> None:
             await asyncio.sleep(0.18)
 
     await broadcast_line(
-        "recon", "Atacante detenido: campaña completada sin acceso."
+        "recon", "GROWJAk detenido: campaña completada sin acceso."
     )
 
 
@@ -533,7 +533,7 @@ class Toolbox:
 
         if _is_blocked(response):
             return ToolResult(
-                f"Atacante detenido: la IP fue bloqueada por el defensor "
+                f"GROWJAk detenido: la IP fue bloqueada por el defensor "
                 f"(intento {self.index}/{total}).",
                 action="blocked",
                 blocked=True,
@@ -574,7 +574,7 @@ async def _run_agentic_anthropic() -> None:
     from anthropic import AsyncAnthropic
 
     await broadcast_line(
-        "recon", "Modelo atacante iniciado. Objetivo fijo: app-login-demo."
+        "recon", "GROWJAk · motor Anthropic iniciado. Objetivo fijo: app-login-demo."
     )
     client = AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=25.0)
     messages: list[dict[str, Any]] = [
@@ -652,13 +652,13 @@ async def _run_agentic_anthropic() -> None:
                     "evidencia de superficie expuesta reportada al defensor.",
                 )
                 await broadcast_line(
-                    "recon", "Atacante detenido: campaña de red team completada."
+                    "recon", "GROWJAk detenido: campaña de red team completada."
                 )
                 return
             if finished:
                 return
 
-    await broadcast_line("recon", "Atacante detenido: límite de pasos alcanzado.")
+    await broadcast_line("recon", "GROWJAk detenido: límite de pasos alcanzado.")
 
 
 def _openai_tools() -> list[dict[str, Any]]:
@@ -678,7 +678,7 @@ def _openai_tools() -> list[dict[str, Any]]:
 async def _run_agentic_groq() -> None:
     settings = get_settings()
     await broadcast_line(
-        "recon", "Modelo atacante Groq iniciado. Objetivo fijo: app-login-demo."
+        "recon", "GROWJAk · motor Groq iniciado. Objetivo fijo: app-login-demo."
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -699,10 +699,10 @@ async def _run_agentic_groq() -> None:
                 )
             except Exception as exc:
                 logger.warning(
-                    "El atacante Groq no respondió (%s)", type(exc).__name__
+                    "GROWJAk Groq no respondió (%s)", type(exc).__name__
                 )
                 await broadcast_line(
-                    "recon", "Atacante detenido: proveedor IA no disponible."
+                    "recon", "GROWJAk detenido: proveedor IA no disponible."
                 )
                 return
 
@@ -711,7 +711,7 @@ async def _run_agentic_groq() -> None:
             raw_calls = message.get("tool_calls") or []
             usage = data.get("usage") or {}
             logger.info(
-                "Groq atacante paso %s · tool_calls=%s · total_tokens=%s",
+                "GROWJAk Groq paso %s · tool_calls=%s · total_tokens=%s",
                 step + 1,
                 len(raw_calls),
                 usage.get("total_tokens"),
@@ -788,11 +788,11 @@ async def _run_agentic_groq() -> None:
                     "evidencia de superficie expuesta reportada al defensor.",
                 )
                 await broadcast_line(
-                    "recon", "Atacante detenido: campaña de red team completada."
+                    "recon", "GROWJAk detenido: campaña de red team completada."
                 )
                 return
 
-    await broadcast_line("recon", "Atacante detenido: límite de pasos alcanzado.")
+    await broadcast_line("recon", "GROWJAk detenido: límite de pasos alcanzado.")
 
 
 async def _run_agentic() -> None:
@@ -832,15 +832,15 @@ class AttackerRunner:
             )
         except TimeoutError:
             await broadcast_line(
-                "recon", "Atacante detenido: tiempo máximo de ejecución excedido."
+                "recon", "GROWJAk detenido: tiempo máximo de ejecución excedido."
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("El agente atacante falló (%s)", type(exc).__name__)
+            logger.warning("GROWJAk falló (%s)", type(exc).__name__)
             await broadcast_line(
                 "recon",
-                f"Atacante detenido: error inesperado ({type(exc).__name__}).",
+                f"GROWJAk detenido: error inesperado ({type(exc).__name__}).",
             )
         finally:
             self._running = False

@@ -27,8 +27,8 @@ async def main() -> None:
                 kind = message.get("type")
                 if kind == "attacker_log":
                     line = message["line"]
-                    print(f"  atacante [{line['action']}] {line['detail']}")
-                    if "Atacante detenido" in line["detail"]:
+                    print(f"  GROWJAk [{line['action']}] {line['detail']}")
+                    if "GROWJAk detenido" in line["detail"]:
                         finished.set()
                 elif kind == "alert_new":
                     alert = message["alert"]
@@ -104,8 +104,8 @@ async def main() -> None:
                 if message.get("type") == "attacker_log"
                 and message["line"]["action"] == "blocked"
             ]
-            assert blocked_lines, "El atacante no detectó el bloqueo"
-            print("  atacante detenido por bloqueo")
+            assert blocked_lines, "GROWJAk no detectó el bloqueo"
+            print("  GROWJAk detenido por bloqueo")
 
             collector.cancel()
 
