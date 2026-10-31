@@ -1,36 +1,24 @@
-# Dependencies
-node_modules/
-.pnpm-store/
-
-# Build and cache
-dist/
-build/
-.cache/
-*.tsbuildinfo
-
-# Python / Backend
-Backend/.venv/
-Backend/__pycache__/
-Backend/*.py[cod]
-Backend/.pytest_cache/
-Backend/.coverage
-Backend/htmlcov/
-Backend/*.egg-info/
-
-# Environment files
 .env
 .env.*
 !.env.example
-/Backend/.env
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# OS & IDE
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+data/
+node_modules/
+dist/
+.cache/
+*.tsbuildinfo
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+.qoder/
+*.log
+*.db
+*.db-wal
+*.db-shm
